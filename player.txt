@@ -1,0 +1,149 @@
+extends CharacterBody2D
+
+const BULLET_SCENE := preload("res://ground/bullet.tscn")
+
+const ANIMATION_PREFIX := &"normal"
+const STATE_LEFT := &"left"
+const STATE_RIGHT := &"right"
+
+@onready var body_sprite: AnimatedSprite2D = $BodySprite
+@onready var shooting_timer: Timer = $ShootingTimer
+@onready var muzzle: Marker2D = $Muzzle
+
+var facing_direction: int = 1
+var _muzzle_offset_x: float = 0.0
+
+# ---------------- 移动参数 ----------------
+@export var move_speed: float = 300.0
+@export var acceleration: float = 1200.0
+@export var friction: float = 1500.0
+
+# ---------------- 跳跃参数 ----------------
+@export var jump_velocity: float = -500.0
+@export var gravity: float = 1100.0
+@export var max_fall_speed: float = 700.0
+@export var jump_cut_multiplier: float = 0.5
+
+# ---------------- 射击参数 ----------------
+@export var fire_interval: float = 0.18
+
+# ---------------- 血量 ----------------
+@export var max_hp: int = 10
+var hp: int = max_hp
+
+signal hp_changed(current_hp: int, maximum_hp: int)
+signal died
+
+func _ready() -> void:
+	hp = max_hp
+	shooting_timer.one_shot = true
+	shooting_timer.wait_time = fire_interval
+	_muzzle_offset_x = absf(muzzle.position.x)
+	_update_animation()
+	hp_changed.emit(hp, max_hp)
+
+func _physics_process(delta: float) -> void:
+	_apply_gravity(delta)
+	_handle_horizontal(delta)
+	_handle_jump()
+	_handle_shooting()
+
+	move_and_slide()
+	_update_animation()
+
+# ---------------- 移动 ----------------
+
+func _apply_gravity(delta: float) -> void:
+	if not is_on_floor():
+		velocity.y = minf(velocity.y + gravity * delta, max_fall_speed)
+	else:
+		velocity.y = maxf(velocity.y, 0.0)
+
+func _handle_horizontal(delta: float) -> void:
+	var input_x := Input.get_axis("move_left", "move_right")
+
+	if input_x != 0.0:
+		facing_direction = signi(int(input_x))
+		velocity.x = move_toward(velocity.x, input_x * move_speed, acceleration * delta)
+	else:
+		velocity.x = move_toward(velocity.x, 0.0, friction * delta)
+
+	muzzle.position.x = _muzzle_offset_x * facing_direction
+
+func _handle_jump() -> void:
+	if Input.is_action_just_pressed("jump") and is_on_floor():
+		velocity.y = jump_velocity
+
+	if Input.is_action_just_released("jump") and velocity.y < 0.0:
+		velocity.y *= jump_cut_multiplier
+
+# ---------------- 射击 ----------------
+
+func _handle_shooting() -> void:
+	if not Input.is_action_pressed("shoot"):
+		return
+	if not shooting_timer.is_stopped():
+		return
+
+	var shoot_direction := Vector2(facing_direction, 0.0)
+	if _spawn_bullet(shoot_direction):
+		shooting_timer.start(fire_interval)
+
+func _spawn_bullet(shoot_direction: Vector2) -> bool:
+	var bullet := BULLET_SCENE.instantiate() as Bullet
+	if bullet == null:
+		return false
+
+	var spawn_parent := get_tree().current_scene
+	if spawn_parent == null:
+		bullet.queue_free()
+		return false
+
+	spawn_parent.add_child(bullet)
+	bullet.top_level = true
+	bullet.setup(shoot_direction)
+	bullet.global_position = muzzle.global_position
+	bullet.owner_node = self
+	return true
+
+# ---------------- 血量 ----------------
+
+func take_damage(amount: int) -> void:
+	if hp <= 0:
+		return
+	hp = maxi(hp - amount, 0)
+	hp_changed.emit(hp, max_hp)
+	print("[P] hp = ", hp)
+	
+	# 受伤闪红
+	body_sprite.modulate = Color(2.0, 0.5, 0.5)
+	await get_tree().create_timer(0.1).timeout
+	if is_instance_valid(self) and hp > 0:
+		body_sprite.modulate = Color.WHITE
+	
+	if hp <= 0:
+		_die()
+
+func _die() -> void:
+	died.emit()
+	print("[P] died!")
+	set_physics_process(false)
+	body_sprite.modulate = Color(1, 1, 1, 0.3)
+	await get_tree().create_timer(1.0).timeout
+	get_tree().reload_current_scene()
+
+# ---------------- 动画 ----------------
+
+func _update_animation() -> void:
+	var animation_name := _get_animation_name()
+
+	if not body_sprite.sprite_frames.has_animation(animation_name):
+		push_warning("Missing player animation: %s" % animation_name)
+		return
+
+	if body_sprite.animation != animation_name:
+		body_sprite.play(animation_name)
+
+func _get_animation_name() -> StringName:
+	var state := STATE_RIGHT if facing_direction > 0 else STATE_LEFT
+	return StringName("%s_%s" % [ANIMATION_PREFIX, state])

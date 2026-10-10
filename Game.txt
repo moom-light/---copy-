@@ -1,0 +1,140 @@
+extends Node2D
+# 挂在 game.tscn 的根节点 Game 上
+# 运行时会自动创建 CanvasLayer + 血条 + 胜利 Label
+
+var _hud_layer: CanvasLayer
+var _player_bar: ProgressBar
+var _boss_bar: ProgressBar
+var _victory_label: Label
+var _victory_shown: bool = false
+
+func _ready() -> void:
+	_create_hud()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_bind_player()
+	_bind_boss()
+
+# ---------------- 创建 HUD ----------------
+
+func _create_hud() -> void:
+	# CanvasLayer：固定在屏幕上
+	_hud_layer = CanvasLayer.new()
+	_hud_layer.name = "HUD"
+	_hud_layer.layer = 10
+	# 暂停时也继续处理（胜利 Label 要能显示）
+	_hud_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(_hud_layer)
+	
+	# 玩家血条
+	_player_bar = ProgressBar.new()
+	_player_bar.name = "PlayerHPBar"
+	_player_bar.position = Vector2(20, 20)
+	_player_bar.size = Vector2(200, 20)
+	_player_bar.max_value = 5
+	_player_bar.value = 5
+	_player_bar.show_percentage = false
+	_hud_layer.add_child(_player_bar)
+	
+	# Boss 血条
+	_boss_bar = ProgressBar.new()
+	_boss_bar.name = "BossHPBar"
+	# 窗口宽 1152，右对齐：1152 - 220 = 932
+	_boss_bar.position = Vector2(932, 20)
+	_boss_bar.size = Vector2(200, 20)
+	_boss_bar.max_value = 10
+	_boss_bar.value = 10
+	_boss_bar.show_percentage = false
+	_hud_layer.add_child(_boss_bar)
+	
+	# 胜利 Label（默认隐藏，居中）
+	_victory_label = Label.new()
+	_victory_label.name = "VictoryLabel"
+	_victory_label.text = "VICTORY!"
+	_victory_label.visible = false
+	_victory_label.position = Vector2(376, 284)
+	_victory_label.size = Vector2(400, 80)
+	_victory_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_victory_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_victory_label.process_mode = Node.PROCESS_MODE_ALWAYS
+	
+	# 字号 48、金色、描边
+	_victory_label.add_theme_font_size_override("font_size", 48)
+	_victory_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
+	_victory_label.add_theme_constant_override("outline_size", 6)
+	_victory_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	
+	_hud_layer.add_child(_victory_label)
+
+# ---------------- 绑定 Player / Boss ----------------
+
+func _bind_player() -> void:
+	var player := get_tree().get_first_node_in_group("player")
+	if player == null:
+		player = get_node_or_null("Player")
+	
+	if player == null:
+		push_warning("HUD: 找不到 Player")
+		return
+	
+	if "max_hp" in player and "hp" in player:
+		_player_bar.max_value = player.max_hp
+		_player_bar.value = player.hp
+	
+	if player.has_signal("hp_changed"):
+		player.hp_changed.connect(_on_player_hp_changed)
+
+func _bind_boss() -> void:
+	var boss: Node = null
+	var bosses := get_tree().get_nodes_in_group("enemy")
+	if bosses.size() > 0:
+		boss = bosses[0]
+	else:
+		boss = get_node_or_null("Boss")
+	
+	if boss == null:
+		_boss_bar.visible = false
+		return
+	
+	_boss_bar.visible = true
+	if "max_hp" in boss and "hp" in boss:
+		_boss_bar.max_value = boss.max_hp
+		_boss_bar.value = boss.hp
+	
+	if boss.has_signal("hp_changed"):
+		boss.hp_changed.connect(_on_boss_hp_changed)
+	if boss.has_signal("died"):
+		boss.died.connect(_on_boss_died)
+
+# ---------------- 信号回调 ----------------
+
+func _on_player_hp_changed(current_hp: int, maximum_hp: int) -> void:
+	_player_bar.max_value = maximum_hp
+	_player_bar.value = current_hp
+
+func _on_boss_hp_changed(current_hp: int, maximum_hp: int) -> void:
+	_boss_bar.max_value = maximum_hp
+	_boss_bar.value = current_hp
+
+func _on_boss_died() -> void:
+	_boss_bar.visible = false
+	_show_victory()
+
+func _show_victory() -> void:
+	_victory_label.visible = true
+	_victory_shown = true
+	get_tree().paused = true
+
+# ---------------- 胜利后按任意键重开 ----------------
+
+func _input(event: InputEvent) -> void:
+	if not _victory_shown:
+		return
+	if event is InputEventKey and event.pressed and not event.echo:
+		_restart()
+	elif event is InputEventMouseButton and event.pressed:
+		_restart()
+
+func _restart() -> void:
+	get_tree().paused = false
+	get_tree().reload_current_scene()

@@ -1,0 +1,148 @@
+extends CharacterBody2D
+
+const BULLET_SCENE := preload("res://ground/bullet.tscn")
+
+enum State { IDLE, ATTACK, DEAD }
+
+@onready var body_sprite: AnimatedSprite2D = $BossSprite
+@onready var attack_timer: Timer = $AttackTimer
+@onready var lifetime_timer: Timer = $LifetimeTimer
+@onready var muzzle: Marker2D = $Muzzle2
+
+# ---------------- 可调参数 ----------------
+@export var attack_interval: float = 2.0
+@export var lifetime: float = 300.0
+@export var max_hp: int = 100
+
+# ---------------- 运行时状态 ----------------
+var state: State = State.IDLE
+var hp: int = max_hp
+var player: Node2D = null
+
+signal hp_changed(current_hp: int, maximum_hp: int)
+signal died
+
+func _ready() -> void:
+	player = get_tree().get_first_node_in_group("player") as Node2D
+	if player == null:
+		push_warning("Boss: 未找到 group 'player' 的节点，无法瞄准")
+
+	if not body_sprite.animation_finished.is_connected(_on_animation_finished):
+		body_sprite.animation_finished.connect(_on_animation_finished)
+
+	attack_timer.one_shot = true
+	attack_timer.wait_time = attack_interval
+	if not attack_timer.timeout.is_connected(_on_attack_timer_timeout):
+		attack_timer.timeout.connect(_on_attack_timer_timeout)
+
+	lifetime_timer.one_shot = true
+	lifetime_timer.wait_time = lifetime
+	if not lifetime_timer.timeout.is_connected(_on_lifetime_timeout):
+		lifetime_timer.timeout.connect(_on_lifetime_timeout)
+
+	hp = max_hp
+	hp_changed.emit(hp, max_hp)
+	_enter_idle()
+	attack_timer.start()
+	lifetime_timer.start()
+
+func _physics_process(_delta: float) -> void:
+	velocity = Vector2.ZERO
+	move_and_slide()
+
+# ---------------- 状态切换 ----------------
+
+func _enter_idle() -> void:
+	state = State.IDLE
+	_play_animation(&"idle")
+
+func _enter_attack() -> void:
+	state = State.ATTACK
+	_play_animation(&"attack")
+
+func _enter_dead() -> void:
+	if state == State.DEAD:
+		return
+	state = State.DEAD
+	attack_timer.stop()
+	lifetime_timer.stop()
+	_play_animation(&"death")
+	set_deferred("collision_layer", 0)
+	set_deferred("collision_mask", 0)
+	#died.emit()
+
+# ---------------- 计时器回调 ----------------
+
+func _on_attack_timer_timeout() -> void:
+	if state != State.IDLE:
+		return
+	_enter_attack()
+
+func _on_lifetime_timeout() -> void:
+	_enter_dead()
+
+# ---------------- 动画回调 ----------------
+
+func _on_animation_finished() -> void:
+	if state == State.ATTACK:
+		_fire_at_player()
+		_enter_idle()
+		attack_timer.start()
+	elif state == State.DEAD:
+		died.emit()
+		queue_free()
+
+# ---------------- 射击 ----------------
+
+func _fire_at_player() -> void:
+	if player == null or not is_instance_valid(player):
+		return
+
+	# 方向：从 Boss 中心指向 Player 中心（修正斜向上）
+	var dir := (player.global_position - global_position).normalized()
+	if dir == Vector2.ZERO:
+		dir = Vector2.RIGHT
+
+	var bullet := BULLET_SCENE.instantiate()
+	if bullet == null:
+		return
+
+	var parent := get_tree().current_scene
+	if parent == null:
+		bullet.queue_free()
+		return
+
+	parent.add_child(bullet)
+	bullet.top_level = true
+	bullet.setup(dir)
+	bullet.global_position = muzzle.global_position
+	bullet.owner_node = self
+
+# ---------------- 血量 ----------------
+
+func take_damage(amount: int) -> void:
+	if state == State.DEAD:
+		return
+	hp = maxi(hp - amount, 0)
+	hp_changed.emit(hp, max_hp)
+	print("[Boss] hp = ", hp)
+
+	# 受伤闪白
+	body_sprite.modulate = Color(2, 2, 2)
+	await get_tree().create_timer(0.1).timeout
+	if is_instance_valid(self) and state != State.DEAD:
+		body_sprite.modulate = Color.WHITE
+
+	if hp <= 0:
+		_enter_dead()
+
+# ---------------- 工具 ----------------
+
+func _play_animation(anim_name: StringName) -> void:
+	if body_sprite.sprite_frames == null:
+		return
+	if not body_sprite.sprite_frames.has_animation(anim_name):
+		push_warning("Boss missing animation: %s" % anim_name)
+		return
+	if body_sprite.animation != anim_name:
+		body_sprite.play(anim_name)
